@@ -1,0 +1,5 @@
+{
+  "version": "1.0.0",
+  "changelog": "- 쿨메신저 모바일(텔레그램·디스코드) 실시간 전달 도우미 공식 출시\n- 윈도우 네이티브 SQLite 실시간 감지 엔진 탑재 (모니터 꺼짐/화면잠금 무관 100% 작동)\n- 안심 모드(학생 개인정보 보호) 및 키워드 필터링, 방해금지 시간대 지원\n- GitHub 원클릭 자동 업데이트 시스템 탑재",
+  "download_url": "https://github.com/gssg100/CoolSuite/releases/download/v1.1.0/CoolNotifier.exe"
+}
