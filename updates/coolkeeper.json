@@ -1,0 +1,5 @@
+{
+  "version": "1.1.0",
+  "changelog": "- 쿨메신저 상시 자리비움 자동 유지\n- 최신 윈도우 10/11 트레이 및 자동 시작 완벽 지원\n- GitHub 원클릭 자동 업데이트 시스템 탑재",
+  "download_url": "https://github.com/gssg100/CoolSuite/releases/download/v1.1.0/CoolKeeper.exe"
+}

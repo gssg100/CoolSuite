@@ -1,0 +1,5 @@
+{
+  "version": "1.1.0",
+  "changelog": "- 쿨메신저 새 쪽지 5초 카운트다운 자동 다운로드\n- 5중 중복 다운로드 방지 필터링 탑재\n- GitHub 원클릭 자동 업데이트 시스템 탑재",
+  "download_url": "https://github.com/gssg100/CoolSuite/releases/download/v1.1.0/CoolDownloader.exe"
+}
