@@ -461,12 +461,12 @@ namespace CoolNotifier
         {
             BuildUI();
             InitializeTray();
+            StartWatcher();
         }
 
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
-            StartWatcher();
 
             ThreadPool.QueueUserWorkItem(delegate
             {
