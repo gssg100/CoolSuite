@@ -92,6 +92,9 @@ namespace CoolNotifier
         [DllImport(DLL, EntryPoint = "sqlite3_finalize", CallingConvention = CallingConvention.Cdecl)]
         public static extern int sqlite3_finalize(IntPtr stmt);
 
+        [DllImport(DLL, EntryPoint = "sqlite3_busy_timeout", CallingConvention = CallingConvention.Cdecl)]
+        public static extern int sqlite3_busy_timeout(IntPtr db, int ms);
+
         [DllImport(DLL, EntryPoint = "sqlite3_close", CallingConvention = CallingConvention.Cdecl)]
         public static extern int sqlite3_close(IntPtr db);
 
@@ -323,6 +326,10 @@ namespace CoolNotifier
             err = "";
             try
             {
+                if (text != null && text.Length > 3800)
+                {
+                    text = text.Substring(0, 3800) + "\n\n... (내용이 길어 일부 생략됨: PC 쿨메신저에서 확인)";
+                }
                 ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; // TLS 1.2
                 string url = string.Format("https://api.telegram.org/bot{0}/sendMessage", botToken.Trim());
                 using (var client = new WebClient())
@@ -1111,6 +1118,8 @@ namespace CoolNotifier
             int rc = WinSqlite.sqlite3_open_v2(utf8Path, out db, WinSqlite.SQLITE_OPEN_READONLY | WinSqlite.SQLITE_OPEN_URI, IntPtr.Zero);
             if (rc != 0) return;
 
+            WinSqlite.sqlite3_busy_timeout(db, 3000);
+
             try
             {
                 // First time init: avoid spamming all historical messages
@@ -1161,9 +1170,17 @@ namespace CoolNotifier
                 // Process found messages
                 foreach (var item in newItems)
                 {
-                    ProcessAndForward(item);
-                    Storage.Config.LastProcessedKey = Math.Max(Storage.Config.LastProcessedKey, item.Key);
-                    Storage.SaveConfig();
+                    bool ok = ProcessAndForward(item);
+                    if (ok)
+                    {
+                        Storage.Config.LastProcessedKey = Math.Max(Storage.Config.LastProcessedKey, item.Key);
+                        Storage.SaveConfig();
+                    }
+                    else
+                    {
+                        Logger.Log(string.Format("전송 일시 실패(네트워크 오류 등)로 인해 Key={0} 재시도를 위해 대기합니다.", item.Key));
+                        break;
+                    }
                 }
             }
             finally
@@ -1172,7 +1189,28 @@ namespace CoolNotifier
             }
         }
 
-        private void ProcessAndForward(NewMessageItem msg)
+        private static string CleanAttachmentString(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "";
+            try
+            {
+                var matches = Regex.Matches(raw, @"([^\\/|:*?""<>]+?\.(?:hwp|hwpx|pdf|xlsx?|docx?|pptx?|zip|png|jpe?g|txt|csv|mp[34]|cell|show))", RegexOptions.IgnoreCase);
+                if (matches.Count == 0) return "";
+                var list = new List<string>();
+                foreach (Match m in matches)
+                {
+                    string fn = m.Groups[1].Value.Trim();
+                    if (!list.Contains(fn)) list.Add(fn);
+                }
+                return string.Join(", ", list.ToArray());
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private bool ProcessAndForward(NewMessageItem msg)
         {
             Logger.Log(string.Format("새 쪽지 감지! Key={0}, Sender={1}, Title={2}", msg.Key, msg.Sender, msg.Title));
 
@@ -1183,7 +1221,7 @@ namespace CoolNotifier
                 if (Storage.Config.DndWeekend && (now.DayOfWeek == DayOfWeek.Saturday || now.DayOfWeek == DayOfWeek.Sunday))
                 {
                     Logger.Log("주말 방해금지 시간대로 인해 전송 생략");
-                    return;
+                    return true;
                 }
                 TimeSpan curTime = now.TimeOfDay;
                 TimeSpan tStart, tEnd;
@@ -1196,7 +1234,7 @@ namespace CoolNotifier
                     if (isDnd)
                     {
                         Logger.Log("방해금지 시간대로 인해 전송 생략 (" + Storage.Config.DndStart + " ~ " + Storage.Config.DndEnd + ")");
-                        return;
+                        return true;
                     }
                 }
             }
@@ -1220,7 +1258,7 @@ namespace CoolNotifier
                     if (!matched)
                     {
                         Logger.Log("키워드 필터 불일치로 전송 생략");
-                        return;
+                        return true;
                     }
                 }
             }
@@ -1231,7 +1269,8 @@ namespace CoolNotifier
             string cleanSender = WebUtility.HtmlEncode(msg.Sender);
             string cleanDate = WebUtility.HtmlEncode(msg.Date);
             string cleanBody = WebUtility.HtmlEncode(msg.Body);
-            string cleanAttach = WebUtility.HtmlEncode(msg.Attach);
+            string cleanAttach = CleanAttachmentString(msg.Attach);
+            string cleanAttachHtml = WebUtility.HtmlEncode(cleanAttach);
 
             if (Storage.Config.NotificationMode == 0) // Full
             {
@@ -1240,7 +1279,7 @@ namespace CoolNotifier
                 sb.AppendLine(string.Format("👤 <b>보낸이:</b> {0}", cleanSender));
                 sb.AppendLine(string.Format("📅 <b>일시:</b> {0}", cleanDate));
                 sb.AppendLine(string.Format("📌 <b>제목:</b> {0}", cleanTitle));
-                if (!string.IsNullOrEmpty(cleanAttach)) sb.AppendLine(string.Format("📎 <b>첨부:</b> {0}", cleanAttach));
+                if (!string.IsNullOrEmpty(cleanAttachHtml)) sb.AppendLine(string.Format("📎 <b>첨부:</b> {0}", cleanAttachHtml));
                 sb.AppendLine();
                 sb.AppendLine("💬 <b>내용:</b>");
                 sb.AppendLine(cleanBody);
@@ -1253,7 +1292,7 @@ namespace CoolNotifier
                 sb.AppendLine(string.Format("👤 <b>보낸이:</b> {0}", cleanSender));
                 sb.AppendLine(string.Format("📅 <b>일시:</b> {0}", cleanDate));
                 sb.AppendLine(string.Format("📌 <b>제목:</b> {0}", cleanTitle));
-                if (!string.IsNullOrEmpty(cleanAttach)) sb.AppendLine(string.Format("📎 <b>첨부:</b> {0}", cleanAttach));
+                if (!string.IsNullOrEmpty(cleanAttachHtml)) sb.AppendLine(string.Format("📎 <b>첨부:</b> {0}", cleanAttachHtml));
                 teleText = sb.ToString();
             }
             else // Simple
@@ -1261,24 +1300,29 @@ namespace CoolNotifier
                 teleText = string.Format("🔔 <b>쿨메신저 쪽지 도착!</b>\n👤 보낸이: {0}\n📅 {1}", cleanSender, cleanDate);
             }
 
+            bool telegramAttempted = Storage.Config.TelegramEnabled && !string.IsNullOrEmpty(Storage.Config.TelegramToken) && !string.IsNullOrEmpty(Storage.Config.TelegramChatId);
+            bool discordAttempted = Storage.Config.DiscordEnabled && !string.IsNullOrEmpty(Storage.Config.DiscordWebhook);
+            bool anyAttempted = telegramAttempted || discordAttempted;
+            bool anySuccess = false;
+
             // 4. Send to Telegram
-            if (Storage.Config.TelegramEnabled && !string.IsNullOrEmpty(Storage.Config.TelegramToken) && !string.IsNullOrEmpty(Storage.Config.TelegramChatId))
+            if (telegramAttempted)
             {
                 string err;
                 bool ok = MessageForwarder.SendTelegram(Storage.Config.TelegramToken, Storage.Config.TelegramChatId, teleText, out err);
                 Storage.AddHistory(msg.Sender, msg.Title, "Telegram", ok ? "성공" : "실패");
-                if (ok) Storage.Config.TotalSentCount++;
+                if (ok) { Storage.Config.TotalSentCount++; anySuccess = true; }
                 else { Storage.Config.TotalFailCount++; Logger.Log("Telegram 전송 실패: " + err); }
             }
 
             // 5. Send to Discord
-            if (Storage.Config.DiscordEnabled && !string.IsNullOrEmpty(Storage.Config.DiscordWebhook))
+            if (discordAttempted)
             {
                 string discBody = (Storage.Config.NotificationMode == 0) ? msg.Body : (Storage.Config.NotificationMode == 1 ? "(안심 모드로 본문 생략됨)" : "(단순 알림 모드)");
                 string err;
-                bool ok = MessageForwarder.SendDiscord(Storage.Config.DiscordWebhook, msg.Title, msg.Sender, msg.Date, discBody, msg.Attach, out err);
+                bool ok = MessageForwarder.SendDiscord(Storage.Config.DiscordWebhook, msg.Title, msg.Sender, msg.Date, discBody, cleanAttach, out err);
                 Storage.AddHistory(msg.Sender, msg.Title, "Discord", ok ? "성공" : "실패");
-                if (ok) Storage.Config.TotalSentCount++;
+                if (ok) { Storage.Config.TotalSentCount++; anySuccess = true; }
                 else { Storage.Config.TotalFailCount++; Logger.Log("Discord 전송 실패: " + err); }
             }
 
@@ -1291,6 +1335,8 @@ namespace CoolNotifier
                     RefreshHistoryUI();
                 });
             }
+
+            return !anyAttempted || anySuccess;
         }
         #endregion
 
