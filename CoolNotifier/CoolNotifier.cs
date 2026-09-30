@@ -1097,7 +1097,7 @@ namespace CoolNotifier
             DateTime latest = DateTime.MinValue;
             foreach (string f in udbFiles)
             {
-                if (f.EndsWith("_Error.log", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!f.EndsWith(".udb", StringComparison.OrdinalIgnoreCase)) continue;
                 DateTime t = File.GetLastWriteTime(f);
                 if (t > latest)
                 {
@@ -1115,7 +1115,7 @@ namespace CoolNotifier
 
             byte[] utf8Path = Encoding.UTF8.GetBytes(udbPath + "\0");
             IntPtr db;
-            int rc = WinSqlite.sqlite3_open_v2(utf8Path, out db, WinSqlite.SQLITE_OPEN_READONLY | WinSqlite.SQLITE_OPEN_URI, IntPtr.Zero);
+            int rc = WinSqlite.sqlite3_open_v2(utf8Path, out db, WinSqlite.SQLITE_OPEN_READONLY, IntPtr.Zero);
             if (rc != 0) return;
 
             WinSqlite.sqlite3_busy_timeout(db, 3000);
