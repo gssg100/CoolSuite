@@ -19,8 +19,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("수지샘 (lemrlog@gmail.com)")]
 [assembly: AssemblyProduct("CoolDownloader")]
 [assembly: AssemblyCopyright("Copyright © 2026 수지샘 (lemrlog@gmail.com) All rights reserved.")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.1.1.0")]
+[assembly: AssemblyFileVersion("1.1.1.0")]
 
 namespace CoolDownloader
 {
@@ -358,6 +358,8 @@ namespace CoolDownloader
         private AutomationElement saveButton;
         private AutomationElement targetWindow;
         private Action onCompletedCallback;
+        private IntPtr directBtnHwnd = IntPtr.Zero;
+        private IntPtr directWinHwnd = IntPtr.Zero;
 
         [DllImport("user32.dll")]
         private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
@@ -376,7 +378,7 @@ namespace CoolDownloader
             }
         }
 
-        public CountdownToastForm(string fp, string sender, List<string> files, AutomationElement btn, AutomationElement win, Action callback)
+        public CountdownToastForm(string fp, string sender, List<string> files, AutomationElement btn, AutomationElement win, Action callback, IntPtr directBtn = default(IntPtr), IntPtr directWin = default(IntPtr))
         {
             this.fingerprint = fp;
             this.senderName = sender;
@@ -384,6 +386,8 @@ namespace CoolDownloader
             this.saveButton = btn;
             this.targetWindow = win;
             this.onCompletedCallback = callback;
+            this.directBtnHwnd = directBtn;
+            this.directWinHwnd = directWin;
             this.totalSeconds = Storage.CountdownSeconds;
             this.remainingSeconds = totalSeconds;
 
@@ -581,10 +585,33 @@ namespace CoolDownloader
             ThreadPool.QueueUserWorkItem(delegate
             {
                 bool clicked = false;
-                try
+
+                // 1. Direct Win32 BM_CLICK (0ms instant click)
+                if (directBtnHwnd != IntPtr.Zero)
                 {
-                    // 1. UIA Invoke
-                    if (saveButton != null)
+                    try
+                    {
+                        PostMessage(directBtnHwnd, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
+                        clicked = true;
+                    }
+                    catch { }
+                }
+
+                // 2. Direct Win32 WM_COMMAND 3320 to target window (0ms instant command)
+                if (!clicked && directWinHwnd != IntPtr.Zero)
+                {
+                    try
+                    {
+                        PostMessage(directWinHwnd, WM_COMMAND, (IntPtr)3320, IntPtr.Zero);
+                        clicked = true;
+                    }
+                    catch { }
+                }
+
+                // 3. Fallback to UIA Invoke
+                if (!clicked && saveButton != null)
+                {
+                    try
                     {
                         var pattern = saveButton.GetCurrentPattern(InvokePattern.Pattern) as InvokePattern;
                         if (pattern != null)
@@ -593,9 +620,10 @@ namespace CoolDownloader
                             clicked = true;
                         }
                     }
+                    catch { }
                 }
-                catch { }
 
+                // 4. Fallback to UIA NativeWindowHandle
                 if (!clicked && saveButton != null)
                 {
                     try
@@ -701,7 +729,7 @@ namespace CoolDownloader
 
         private void BuildUI()
         {
-            this.Text = "CoolDownloader v1.1.0 - 쿨메신저 첨부파일 자동 다운로더 (수지샘)";
+            this.Text = "CoolDownloader v1.1.1 - 쿨메신저 첨부파일 자동 다운로더 (수지샘)";
             this.Size = new Size(540, 520);
             this.FormBorderStyle = FormBorderStyle.FixedSingle;
             this.MaximizeBox = false;
@@ -723,7 +751,7 @@ namespace CoolDownloader
             this.Controls.Add(pnlHeader);
 
             lblHeaderTitle = new Label();
-            lblHeaderTitle.Text = "CoolDownloader v1.1.0";
+            lblHeaderTitle.Text = "CoolDownloader v1.1.1";
             lblHeaderTitle.Font = new Font("Malgun Gothic", 14F, FontStyle.Bold);
             lblHeaderTitle.ForeColor = Color.White;
             lblHeaderTitle.Location = new Point(20, 12);
@@ -926,7 +954,7 @@ namespace CoolDownloader
             ToolStripMenuItem menuExit = new ToolStripMenuItem("종료", null, delegate
             {
                 isExiting = true;
-                isStopping = true;
+                CleanupWatcher();
                 if (trayIcon != null) trayIcon.Visible = false;
                 Application.Exit();
             });
@@ -1086,10 +1114,13 @@ namespace CoolDownloader
             catch { }
         }
 
-        #region Background Watcher Thread
+        #region Background Watcher Thread & WinEventHook
         [DllImport("user32.dll")]
         private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
         private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
         [DllImport("user32.dll")]
         private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
@@ -1103,24 +1134,138 @@ namespace CoolDownloader
         [DllImport("user32.dll")]
         private static extern bool IsWindowVisible(IntPtr hWnd);
 
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowEnabled(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern int GetDlgCtrlID(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDlgItem(IntPtr hDlg, int nIDDlgItem);
+
         [DllImport("user32.dll", SetLastError = true)]
         private static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool SetThreadDesktop(IntPtr hDesktop);
 
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+        [DllImport("user32.dll")]
+        private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+        private delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+
+        private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+        private const uint EVENT_OBJECT_SHOW = 0x8002;
+        private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+        private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+
+        private WinEventDelegate winEventDelegate;
+        private IntPtr hWinEventHook = IntPtr.Zero;
         private Dictionary<uint, bool> coolPidCache = new Dictionary<uint, bool>();
+        private object inspectLock = new object();
+        private HashSet<IntPtr> processedHwnds = new HashSet<IntPtr>();
+
+        private void CleanProcessedHwnds()
+        {
+            lock (inspectLock)
+            {
+                if (processedHwnds.Count == 0) return;
+                List<IntPtr> dead = new List<IntPtr>();
+                foreach (IntPtr h in processedHwnds)
+                {
+                    if (!IsWindow(h)) dead.Add(h);
+                }
+                foreach (IntPtr h in dead) processedHwnds.Remove(h);
+            }
+        }
 
         private void StartWatcher()
         {
+            try
+            {
+                winEventDelegate = new WinEventDelegate(OnWinEventHook);
+                hWinEventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_SHOW, IntPtr.Zero, winEventDelegate, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+                Logger.Log("WinEventHook(0ms 즉각 감지) 등록 완료: " + (hWinEventHook != IntPtr.Zero));
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("WinEventHook 등록 실패 (50ms 폴링으로 대체): " + ex.Message);
+            }
+
             watcherThread = new Thread(WatcherLoop);
             watcherThread.IsBackground = true;
             watcherThread.Start();
         }
 
+        private void CleanupWatcher()
+        {
+            isStopping = true;
+            if (hWinEventHook != IntPtr.Zero)
+            {
+                try
+                {
+                    UnhookWinEvent(hWinEventHook);
+                    hWinEventHook = IntPtr.Zero;
+                    Logger.Log("WinEventHook 해제 완료");
+                }
+                catch { }
+            }
+        }
+
+        private void OnWinEventHook(IntPtr hHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+        {
+            if (hwnd == IntPtr.Zero || idObject != 0) return; // OBJID_WINDOW = 0
+            if (!Storage.IsMonitoringActive) return;
+
+            try
+            {
+                uint pid;
+                GetWindowThreadProcessId(hwnd, out pid);
+                if (pid == 0) return;
+
+                bool isCool;
+                if (!coolPidCache.TryGetValue(pid, out isCool))
+                {
+                    try
+                    {
+                        Process p = Process.GetProcessById((int)pid);
+                        isCool = p.ProcessName.ToLower().Contains("cool");
+                        coolPidCache[pid] = isCool;
+                    }
+                    catch
+                    {
+                        coolPidCache[pid] = false;
+                        return;
+                    }
+                }
+                if (!isCool) return;
+
+                var sbCls = new StringBuilder(128);
+                GetClassName(hwnd, sbCls, 128);
+                if (sbCls.ToString() != "#32770") return;
+
+                var sbTitle = new StringBuilder(256);
+                GetWindowText(hwnd, sbTitle, 256);
+                string title = sbTitle.ToString();
+                if (title == "COOLMESSENGER" || title == "Cool Advertise") return;
+
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    InspectWindow(hwnd);
+                });
+            }
+            catch { }
+        }
+
         private void WatcherLoop()
         {
-            Logger.Log("감시자 스레드(WatcherLoop) 시작");
+            Logger.Log("초고속 감시자 스레드(WatcherLoop 50ms) 시작");
             try
             {
                 IntPtr hDesk = OpenDesktop("default", 0, false, 0x01FF);
@@ -1128,6 +1273,7 @@ namespace CoolDownloader
             }
             catch { }
 
+            int cycle = 0;
             while (!isStopping)
             {
                 if (Storage.IsMonitoringActive)
@@ -1141,7 +1287,14 @@ namespace CoolDownloader
                         Logger.Log("ScanForNoteWindows 오류: " + ex.Message);
                     }
                 }
-                Thread.Sleep(500);
+
+                cycle++;
+                if (cycle % 20 == 0)
+                {
+                    CleanProcessedHwnds();
+                }
+
+                Thread.Sleep(50); // 50ms ultra-fast polling interval (replaces slow 500ms delay)
             }
         }
 
@@ -1152,6 +1305,11 @@ namespace CoolDownloader
             EnumWindows(delegate (IntPtr hwnd, IntPtr lParam)
             {
                 if (!IsWindowVisible(hwnd)) return true;
+
+                lock (inspectLock)
+                {
+                    if (processedHwnds.Contains(hwnd)) return true; // Already verified/processed; skip immediately
+                }
 
                 uint pid;
                 GetWindowThreadProcessId(hwnd, out pid);
@@ -1200,103 +1358,154 @@ namespace CoolDownloader
         {
             try
             {
-                AutomationElement win = AutomationElement.FromHandle(hwnd);
-                if (win == null) return;
+                if (!IsWindow(hwnd) || !IsWindowVisible(hwnd)) return;
 
-                // 1. Look for Save Button (AutomationId == "3320" or Name contains "모든파일" or "모두저장")
-                AutomationElement saveBtn = null;
-                Condition btnCond = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button);
-                AutomationElementCollection btns = win.FindAll(TreeScope.Descendants, btnCond);
-                foreach (AutomationElement b in btns)
+                lock (inspectLock)
                 {
-                    string bId = b.Current.AutomationId;
-                    string bName = b.Current.Name;
-                    if (bId == "3320" || bName.Contains("모든파일") || bName.Contains("모두 저장") || bName.Contains("모든파일 저장"))
-                    {
-                        try
-                        {
-                            if (b.Current.IsEnabled && !b.Current.IsOffscreen)
-                            {
-                                saveBtn = b;
-                                break;
-                            }
-                        }
-                        catch { }
-                    }
+                    if (processedHwnds.Contains(hwnd)) return;
                 }
 
-                if (saveBtn == null) return; // No active attachment save button on this window
+                // 1. FAST Win32 Check for Save Button (0.001ms)
+                IntPtr directSaveBtn = GetDlgItem(hwnd, 3320);
+                bool hasSaveBtn = (directSaveBtn != IntPtr.Zero && IsWindowVisible(directSaveBtn) && IsWindowEnabled(directSaveBtn));
 
-                // 2. Scan for attachment filenames in Panes / Texts
+                List<string> childTexts = new List<string>();
+
+                // Fast child enumeration (0.05ms) to confirm button and collect all child text labels
+                EnumChildWindows(hwnd, delegate (IntPtr child, IntPtr l)
+                {
+                    int id = GetDlgCtrlID(child);
+                    var sbText = new StringBuilder(512);
+                    GetWindowText(child, sbText, 512);
+                    string t = sbText.ToString().Trim();
+                    if (!string.IsNullOrEmpty(t)) childTexts.Add(t);
+
+                    if (!hasSaveBtn && (id == 3320 || t.Contains("모든파일") || t.Contains("모두 저장") || t.Contains("모든파일 저장")))
+                    {
+                        if (IsWindowVisible(child) && IsWindowEnabled(child))
+                        {
+                            directSaveBtn = child;
+                            hasSaveBtn = true;
+                        }
+                    }
+                    return true;
+                }, IntPtr.Zero);
+
+                // If no attachment save button exists on this window, mark as processed and exit instantly!
+                if (!hasSaveBtn)
+                {
+                    lock (inspectLock) { processedHwnds.Add(hwnd); }
+                    return;
+                }
+
+                // 2. Fast Win32 Attachment & Sender Extraction (0.05ms)
                 List<string> cleanFiles = new List<string>();
                 string sender = "";
-
-                var panes = win.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Pane));
-                foreach (AutomationElement p in panes)
-                {
-                    string pName = p.Current.Name;
-                    if (Regex.IsMatch(pName, @"\.(hwp|hwpx|pdf|xls|xlsx|zip|png|jpg|doc|docx|ppt|pptx)", RegexOptions.IgnoreCase))
-                    {
-                        string clean = FingerprintHelper.NormalizeFilename(pName);
-                        if (!string.IsNullOrEmpty(clean) && !cleanFiles.Contains(clean))
-                        {
-                            cleanFiles.Add(clean);
-                        }
-                    }
-                }
-
                 string msgDate = "";
                 Regex dateRegex = new Regex(@"20\d{2}[/\-.]\d{1,2}[/\-.]\d{1,2}\s+\d{1,2}:\d{2}");
 
-                // Scan text controls for attachments, sender, and date
-                var texts = win.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text));
-                foreach (AutomationElement t in texts)
+                foreach (string text in childTexts)
                 {
-                    string tName = t.Current.Name;
-                    if (Regex.IsMatch(tName, @"\.(hwp|hwpx|pdf|xls|xlsx|zip|png|jpg|doc|docx|ppt|pptx)", RegexOptions.IgnoreCase))
+                    MatchCollection matches = Regex.Matches(text, @"[^\r\n\t\\/:]+\.(hwp|hwpx|pdf|xls|xlsx|zip|png|jpg|doc|docx|ppt|pptx)", RegexOptions.IgnoreCase);
+                    foreach (Match m in matches)
                     {
-                        string clean = FingerprintHelper.NormalizeFilename(tName);
+                        string clean = FingerprintHelper.NormalizeFilename(m.Value);
                         if (!string.IsNullOrEmpty(clean) && !cleanFiles.Contains(clean))
                         {
                             cleanFiles.Add(clean);
                         }
                     }
-                    if (string.IsNullOrEmpty(sender) && (tName.StartsWith("보낸사람:") || tName.StartsWith("보낸이:") || tName.StartsWith("발신:")))
+
+                    if (string.IsNullOrEmpty(sender) && (text.StartsWith("보낸사람:") || text.StartsWith("보낸이:") || text.StartsWith("발신:")))
                     {
-                        sender = tName.Substring(tName.IndexOf(':') + 1).Trim();
+                        sender = text.Substring(text.IndexOf(':') + 1).Trim();
                     }
                     if (string.IsNullOrEmpty(msgDate))
                     {
-                        Match m = dateRegex.Match(tName);
-                        if (m.Success) msgDate = m.Value;
+                        Match dm = dateRegex.Match(text);
+                        if (dm.Success) msgDate = dm.Value;
                     }
                 }
 
-                // CRITICAL SAFETY 1: If no attachment files identified, DO NOT trigger!
+                AutomationElement winUia = null;
+                AutomationElement saveBtnUia = null;
+
+                // 3. Fallback: If cleanFiles is still empty, invoke UIAutomation for custom panes
                 if (cleanFiles.Count == 0)
                 {
-                    return; // No verified attachments on this window; ignore to prevent spurious duplicate downloads
+                    try
+                    {
+                        winUia = AutomationElement.FromHandle(hwnd);
+                        if (winUia != null)
+                        {
+                            var panes = winUia.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Pane));
+                            foreach (AutomationElement p in panes)
+                            {
+                                string pName = p.Current.Name;
+                                if (Regex.IsMatch(pName, @"\.(hwp|hwpx|pdf|xls|xlsx|zip|png|jpg|doc|docx|ppt|pptx)", RegexOptions.IgnoreCase))
+                                {
+                                    string clean = FingerprintHelper.NormalizeFilename(pName);
+                                    if (!string.IsNullOrEmpty(clean) && !cleanFiles.Contains(clean))
+                                        cleanFiles.Add(clean);
+                                }
+                            }
+                            if (cleanFiles.Count == 0)
+                            {
+                                var texts = winUia.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text));
+                                foreach (AutomationElement t in texts)
+                                {
+                                    string tName = t.Current.Name;
+                                    if (Regex.IsMatch(tName, @"\.(hwp|hwpx|pdf|xls|xlsx|zip|png|jpg|doc|docx|ppt|pptx)", RegexOptions.IgnoreCase))
+                                    {
+                                        string clean = FingerprintHelper.NormalizeFilename(tName);
+                                        if (!string.IsNullOrEmpty(clean) && !cleanFiles.Contains(clean))
+                                            cleanFiles.Add(clean);
+                                    }
+                                    if (string.IsNullOrEmpty(sender) && (tName.StartsWith("보낸사람:") || tName.StartsWith("보낸이:") || tName.StartsWith("발신:")))
+                                    {
+                                        sender = tName.Substring(tName.IndexOf(':') + 1).Trim();
+                                    }
+                                    if (string.IsNullOrEmpty(msgDate))
+                                    {
+                                        Match m = dateRegex.Match(tName);
+                                        if (m.Success) msgDate = m.Value;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                // CRITICAL SAFETY 1: If no attachment files identified, exit and mark processed
+                if (cleanFiles.Count == 0)
+                {
+                    lock (inspectLock) { processedHwnds.Add(hwnd); }
+                    return;
                 }
 
                 if (string.IsNullOrEmpty(sender))
                 {
-                    string winTitle = win.Current.Name;
+                    var sbTitle = new StringBuilder(256);
+                    GetWindowText(hwnd, sbTitle, 256);
+                    string winTitle = sbTitle.ToString();
                     if (!string.IsNullOrEmpty(winTitle) && !winTitle.Contains("메시지"))
                     {
                         sender = winTitle;
                     }
                 }
 
-                // 3. Compute Fingerprint with Date and Normalized Files
+                // 4. Compute Fingerprint with Date and Normalized Files
                 string fp = FingerprintHelper.ComputeFingerprint(cleanFiles, sender, msgDate);
 
-                // 4. Check if already recorded in history or currently pending
+                // 5. Check if already recorded in history or currently pending
                 if (Storage.HasHistory(fp) || Storage.IsPending(fp))
                 {
+                    lock (inspectLock) { processedHwnds.Add(hwnd); }
                     return;
                 }
 
-                // CRITICAL SAFETY 2: Pre-check if all attachment files already exist in Received Files directory
+                // 6. Pre-check if all attachment files already exist in Received Files directory
                 string saveDir = Storage.GetSaveDirectory();
                 bool allFilesExist = true;
                 foreach (string f in cleanFiles)
@@ -1312,24 +1521,26 @@ namespace CoolDownloader
                 {
                     // Files already exist locally on disk! Auto-mark as DOWNLOADED without bothering the user.
                     Storage.RecordHistory(fp, "DOWNLOADED", sender, cleanFiles);
+                    lock (inspectLock) { processedHwnds.Add(hwnd); }
                     return;
                 }
 
-                // 5. Pre-emptive Lock (Pending)
+                // 7. Pre-emptive Lock (Pending) and Mark Processed
                 Storage.MarkPending(fp);
-                Logger.Log(string.Format("신규 첨부파일 쪽지 감지: 발신자={0}, 일시={1}, 파일={2}, 지문={3}", sender, msgDate, string.Join(",", cleanFiles.ToArray()), fp));
+                lock (inspectLock) { processedHwnds.Add(hwnd); }
+                Logger.Log(string.Format("신규 쪽지 초고속(0ms) 감지 완료: 발신자={0}, 일시={1}, 파일={2}, 지문={3}", sender, msgDate, string.Join(",", cleanFiles.ToArray()), fp));
 
-                // 6. Launch Countdown Toast Form on UI thread
+                // 8. Launch Countdown Toast Form on UI thread
                 if (this.IsHandleCreated && !this.IsDisposed)
                 {
                     this.BeginInvoke((MethodInvoker)delegate
                     {
                         try
                         {
-                            CountdownToastForm toast = new CountdownToastForm(fp, sender, cleanFiles, saveBtn, win, delegate
+                            CountdownToastForm toast = new CountdownToastForm(fp, sender, cleanFiles, saveBtnUia, winUia, delegate
                             {
                                 RefreshUI();
-                            });
+                            }, directSaveBtn, hwnd);
                             toast.Show();
                         }
                         catch (Exception ex)
@@ -1351,7 +1562,7 @@ namespace CoolDownloader
     #region Auto-Updater System
     public static class AutoUpdater
     {
-        public static string CurrentVersion = "1.1.0";
+        public static string CurrentVersion = "1.1.1";
         public static string AppDisplayName = "CoolDownloader";
         public static string DefaultCheckUrl = "https://raw.githubusercontent.com/gssg100/CoolSuite/main/updates/cooldownloader.json";
 
