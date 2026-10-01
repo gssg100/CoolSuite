@@ -45,6 +45,15 @@ namespace CoolDownloader
 
     static class Program
     {
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        public static extern uint RegisterWindowMessage(string lpString);
+
+        [DllImport("user32.dll")]
+        public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        public static readonly IntPtr HWND_BROADCAST = (IntPtr)0xffff;
+        public static uint WM_SHOWME = 0;
+
         [STAThread]
         static void Main()
         {
@@ -54,13 +63,15 @@ namespace CoolDownloader
                 Logger.Log("치명적 오류 (UnhandledException): " + e.ExceptionObject.ToString());
             };
 
+            WM_SHOWME = RegisterWindowMessage("CoolDownloader_ShowMainWindow_suji");
+
             bool createdNew;
             using (Mutex mutex = new Mutex(true, "CoolDownloader_SingleInstance_Mutex_suji", out createdNew))
             {
                 if (!createdNew)
                 {
-                    Logger.Log("이미 실행 중인 인스턴스가 있어 종료합니다.");
-                    MessageBox.Show("CoolDownloader가 이미 실행 중입니다.\n작업표시줄 우측 하단 트레이 아이콘을 확인해주세요.", "CoolDownloader", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Logger.Log("이미 실행 중인 인스턴스가 있어 창 활성화 메시지를 전송합니다.");
+                    PostMessage(HWND_BROADCAST, WM_SHOWME, IntPtr.Zero, IntPtr.Zero);
                     return;
                 }
 
@@ -993,6 +1004,19 @@ namespace CoolDownloader
             base.OnFormClosing(e);
         }
 
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg != 0 && m.Msg == Program.WM_SHOWME)
+            {
+                this.Show();
+                this.WindowState = FormWindowState.Normal;
+                this.BringToFront();
+                this.Activate();
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
         public void RefreshUI()
         {
             if (this.InvokeRequired)
@@ -1834,13 +1858,21 @@ namespace CoolDownloader
             try
             {
                 string batPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "apply_update.bat");
+                string exeName = Path.GetFileName(currentExe);
                 string batContent = string.Format(
                     "@echo off\r\n" +
+                    "chcp 65001 > nul\r\n" +
+                    "taskkill /F /IM \"{0}\" > nul 2>&1\r\n" +
                     "timeout /t 1 /nobreak > nul\r\n" +
-                    "move /y \"{0}\" \"{1}\" > nul\r\n" +
-                    "start \"\" \"{1}\"\r\n" +
+                    ":retry\r\n" +
+                    "move /y \"{1}\" \"{2}\" > nul 2>&1\r\n" +
+                    "if errorlevel 1 (\r\n" +
+                    "    timeout /t 1 /nobreak > nul\r\n" +
+                    "    goto retry\r\n" +
+                    ")\r\n" +
+                    "start \"\" \"{2}\"\r\n" +
                     "del \"%~f0\"\r\n",
-                    newExe, currentExe
+                    exeName, newExe, currentExe
                 );
                 File.WriteAllText(batPath, batContent, Encoding.Default);
 
