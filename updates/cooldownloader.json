@@ -1,5 +1,5 @@
 {
-  "version": "1.1.2",
-  "changelog": "v1.1.2: 오래된 쪽지 자동 스킵(5분), 디스크 파일 존재 시 스킵 안전장치 추가",
+  "version": "1.1.3",
+  "changelog": "v1.1.3: 발신자 자동 추출 대폭 강화, 지난 쪽지 정상 수신 지원(오탐지 스킵 해제), 중복 스킵 목록 UI 정리",
   "download_url": "https://raw.githubusercontent.com/gssg100/CoolSuite/main/CoolDownloader/CoolDownloader.exe"
 }
